@@ -13,9 +13,6 @@ import (
 	"strings"
 )
 
-// This is really just a shell agnostic way of implementing my
-// favorite prompt config. Once installed, it should be just called
-// in whatever config you might want.
 func main() {
 	args := os.Args[1:]
 
@@ -26,19 +23,17 @@ func main() {
 
 	var err error
 	switch cmd {
-	case "right":
-		err = right(os.Stdout)
+	case "remote":
+		err = printRemote(os.Stdout)
 
-	case "tmux-right":
-		fs := flag.NewFlagSet("tmux", flag.ExitOnError)
+	case "path":
+		fs := flag.NewFlagSet("path", flag.ExitOnError)
 		width := fs.Int("width", 40, "Max width")
 		fs.Parse(args[0:])
-		err = tmuxRight(*width, os.Stdin, os.Stdout)
+		err = printPath(*width, os.Stdin, os.Stdout)
 
-	case "left":
-		fallthrough
-	default:
-		err = left(os.Stdout)
+	case "", "prompt":
+		err = printPrompt(os.Stdout)
 	}
 
 	if err != nil {
@@ -47,7 +42,7 @@ func main() {
 	}
 }
 
-func right(out io.Writer) error {
+func printRemote(out io.Writer) error {
 	if !isRemote() {
 		return nil
 	}
@@ -67,28 +62,32 @@ func right(out io.Writer) error {
 	return nil
 }
 
-func tmuxRight(limit int, in io.Reader, out io.Writer) error {
-	wd, _ := io.ReadAll(in)
+func isRemote() bool {
+	return os.Getenv("SSH_CONNECTION") != ""
+}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
+func printPath(width int, in io.Reader, out io.Writer) error {
+	fullPath, _ := io.ReadAll(in)
+	home, _ := os.UserHomeDir()
 
-	path := string(wd)
+	path := formatPath(string(fullPath), width, home)
+	out.Write([]byte(path))
 
+	return nil
+}
+
+func formatPath(path string, width int, home string) string {
 	if strings.HasPrefix(path, home) {
 		path = "~" + path[len(home):]
 	}
 
-	if len(path) <= limit {
-		out.Write([]byte(path))
-		return nil
+	if len(path) <= width {
+		return path
 	}
 
 	parts := strings.Split(path, string(filepath.Separator))
 	if len(parts) < 1 {
-		return nil
+		return path
 	}
 
 	for i := 0; i < len(parts)-1; i++ {
@@ -97,9 +96,8 @@ func tmuxRight(limit int, in io.Reader, out io.Writer) error {
 		}
 
 		path = filepath.Join(parts...)
-		if len(path) <= limit {
-			out.Write([]byte(path))
-			return nil
+		if len(path) <= width {
+			return path
 		}
 	}
 
@@ -108,20 +106,19 @@ func tmuxRight(limit int, in io.Reader, out io.Writer) error {
 	path = parts[0]
 	for _, p := range parts[1:] {
 		v := filepath.Join(p, path)
-		if len(v) < limit {
+		if len(v) < width {
 			path = v
 		} else {
 			break
 		}
 	}
 
-	out.Write([]byte("+" + path))
-	return nil
+	return "+" + path
 }
 
-func left(out io.Writer) error {
+func printPrompt(out io.Writer) error {
 	if isRepo() {
-		out.Write([]byte("g"))
+		out.Write([]byte("@"))
 
 		status, err := repoStatus()
 		if err != nil {
@@ -129,33 +126,29 @@ func left(out io.Writer) error {
 		}
 
 		if status.head != "main" && status.head != "master" {
-			out.Write([]byte("c"))
+			out.Write([]byte("*"))
 		}
 
 		if status.dirty {
-			out.Write([]byte("d"))
+			out.Write([]byte("!"))
 		}
 
 		if status.behind > 0 {
-			out.Write([]byte("b"))
+			out.Write([]byte("<"))
 		}
 
 		if status.ahead > 0 {
-			out.Write([]byte("a"))
+			out.Write([]byte(">"))
 		}
 
 		if status.stash {
-			out.Write([]byte("s"))
+			out.Write([]byte("$"))
 		}
 	}
 
 	out.Write([]byte("> "))
 
 	return nil
-}
-
-func isRemote() bool {
-	return os.Getenv("SSH_CONNECTION") != ""
 }
 
 func isRepo() bool {
