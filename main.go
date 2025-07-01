@@ -3,144 +3,158 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// This is really just a shell agnostic way of implementing my
-// favorite prompt config. Once installed, it should be just called
-// in whatever config you might want.
 func main() {
-	flag := flag.NewFlagSet("tprompt", flag.ExitOnError)
+	args := os.Args[1:]
 
-	l := flag.Bool("left", true, "prints left prompt")
-	r := flag.Bool("right", false, "prints right prompt")
+	var cmd string
+	if len(args) > 0 {
+		cmd = args[0]
+	}
 
-	if err := flag.Parse(os.Args[1:]); err != nil {
-		fmt.Fprintf(flag.Output(), "Could not parse flags: %v\n", err)
+	var err error
+	switch cmd {
+	case "remote":
+		err = printRemote(os.Stdout)
+
+	case "path":
+		fs := flag.NewFlagSet("path", flag.ExitOnError)
+		width := fs.Int("width", 40, "Max width")
+		fs.Parse(args[0:])
+		err = printPath(*width, os.Stdin, os.Stdout)
+
+	case "", "prompt":
+		err = printPrompt(os.Stdout)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Prompt err (%s): %v\n", cmd, err)
 		os.Exit(1)
 	}
-
-	if *r {
-		out, err := right()
-		if err != nil {
-			fmt.Fprintf(flag.Output(), "Right prompt err: %v\n", err)
-			os.Exit(1)
-		}
-		os.Stdout.WriteString(out)
-		os.Exit(0)
-	}
-
-	if *l {
-		out, err := left()
-		if err != nil {
-			fmt.Fprintf(flag.Output(), "Left prompt err: %v\n", err)
-			os.Exit(1)
-		}
-		os.Stdout.WriteString(out)
-		os.Exit(0)
-	}
-
-	flag.Usage()
-	os.Exit(1)
 }
 
-// right generates the right prompt.
-// If executed over ssh, it prints <username>@<hostname>, otherwise
-// it is just an empty string.
-func right() (string, error) {
+func printRemote(out io.Writer) error {
 	if !isRemote() {
-		return "", nil
+		return nil
 	}
 
 	usr, err := user.Current()
 	if err != nil {
-		return "", err
+		return err
 	}
+	out.Write([]byte(usr.Username))
 
 	host, err := os.Hostname()
 	if err != nil {
-		return "", err
+		return err
 	}
+	out.Write([]byte("@" + host))
 
-	return usr.Username + "@" + host, nil
-}
-
-func left() (string, error) {
-	var prompt strings.Builder
-
-	wd, err := os.Getwd()
-	if err != nil {
-		return prompt.String(), err
-	}
-
-	usr, err := user.Current()
-	if err != nil {
-		return prompt.String(), err
-	}
-
-	if strings.HasPrefix(wd, usr.HomeDir) {
-		prompt.WriteRune('~')
-		prompt.WriteString(strings.TrimPrefix(wd, usr.HomeDir))
-	} else {
-		prompt.WriteString(wd)
-	}
-
-	if isRepo() {
-		var flags string
-
-		status, err := repoStatus()
-		if err != nil {
-			return prompt.String(), err
-		}
-
-		if status.head != "main" && status.head != "master" {
-			flags += "c"
-		}
-
-		if status.dirty {
-			flags += "d"
-		}
-
-		if status.behind > 0 {
-			flags += "b"
-		}
-
-		if status.ahead > 0 {
-			flags += "a"
-		}
-
-		if status.stash {
-			flags += "s"
-		}
-
-		if len(flags) > 0 {
-			prompt.WriteString("|" + flags)
-		}
-	}
-
-	prompt.WriteString("> ")
-
-	return fmt.Sprintf("%s", prompt.String()), nil
+	return nil
 }
 
 func isRemote() bool {
 	return os.Getenv("SSH_CONNECTION") != ""
 }
 
+func printPath(width int, in io.Reader, out io.Writer) error {
+	fullPath, _ := io.ReadAll(in)
+	home, _ := os.UserHomeDir()
+
+	path := formatPath(string(fullPath), width, home)
+	out.Write([]byte(path))
+
+	return nil
+}
+
+func formatPath(path string, width int, home string) string {
+	if strings.HasPrefix(path, home) {
+		path = "~" + path[len(home):]
+	}
+
+	if len(path) <= width {
+		return path
+	}
+
+	parts := strings.Split(path, string(filepath.Separator))
+	if len(parts) < 1 {
+		return path
+	}
+
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] != "~" && len(parts[i]) > 0 {
+			parts[i] = string(parts[i][0])
+		}
+
+		path = filepath.Join(parts...)
+		if len(path) <= width {
+			return path
+		}
+	}
+
+	slices.Reverse(parts)
+
+	path = parts[0]
+	for _, p := range parts[1:] {
+		v := filepath.Join(p, path)
+		if len(v) < width {
+			path = v
+		} else {
+			break
+		}
+	}
+
+	return "+" + path
+}
+
+func printPrompt(out io.Writer) error {
+	if isRepo() {
+		out.Write([]byte("@"))
+
+		status, err := repoStatus()
+		if err != nil {
+			return err
+		}
+
+		if status.head != "main" && status.head != "master" {
+			out.Write([]byte("*"))
+		}
+
+		if status.dirty {
+			out.Write([]byte("!"))
+		}
+
+		if status.behind > 0 {
+			out.Write([]byte("<"))
+		}
+
+		if status.ahead > 0 {
+			out.Write([]byte(">"))
+		}
+
+		if status.stash {
+			out.Write([]byte("$"))
+		}
+	}
+
+	out.Write([]byte("> "))
+
+	return nil
+}
+
 func isRepo() bool {
 	cmd := exec.Command("git", "--no-optional-locks", "rev-parse", "--is-inside-work-tree")
 	err := cmd.Run()
 	return err == nil
-}
-
-func repoPath() (string, error) {
-	cmd := exec.Command("git", "--no-optional-locks", "rev-parse", "--show-toplevel")
-	out, err := cmd.Output()
-	return string(out), err
 }
 
 func repoStatus() (status, error) {
