@@ -29,7 +29,7 @@ func main() {
 	case "path":
 		fs := flag.NewFlagSet("path", flag.ExitOnError)
 		width := fs.Int("width", 40, "Max width")
-		fs.Parse(args[0:])
+		fs.Parse(args[1:])
 		err = printPath(*width, os.Stdin, os.Stdout)
 
 	case "", "prompt":
